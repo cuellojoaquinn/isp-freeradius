@@ -2,7 +2,7 @@
 
 | Archivo | Equipo |
 |---|---|
-| `r1.rsc` | R1: NAS / servidor PPPoE *(pendiente)* |
+| `r1.rsc` | R1: NAS / servidor PPPoE `isp` sobre `vlan-acceso`, solo CHAP, RADIUS en `10.10.10.10` |
 | `r2-abonado1.rsc` | R2: abonado1, cliente PPPoE `wan-pppoe` sobre `vlan-acceso` (VLAN 100) |
 
 Guardar acá el export de R1:

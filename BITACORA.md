@@ -182,3 +182,13 @@ Mapeo red UTM ↔ interfaz hecho comparando MACs (UTM *Edit → Network* vs `/in
 - [ ] Probar qué pasa con los abonados si se cae el RADIUS (conectado vs conectándose).
 - [ ] Sumar PostgreSQL (coordinar esquema con quien hace Grafana).
 - [x] Repo + Vagrant (VirtualBox) + secretos en .env.
+
+## 2026-11-19 (tarde) — Configs de MikroTik al repo
+
+- `mikrotik/r1.rsc` (R1, NAS) y `mikrotik/r2-abonado1.rsc` (R2, abonado1: `pppoe-client` `wan-pppoe` sobre `vlan-acceso`, VLAN 100, `add-default-route=yes`). En RouterOS 7, `/export` oculta secretos por defecto; se quitó además el `system id`.
+- **Incidente:** se pegó por error el export de R2 en la terminal de R1, que lo ejecutó como comandos. R1 quedó con identity `R2`, un `pppoe-client` `wan-pppoe` (user abonado1, sin contraseña) y un `dhcp-client` en `ether1` (gestión).
+  - Detección: prompt `[admin@R2]` con las IPs de R1 (`/ip address print`) y `/system history print`: todos los cambios a la misma hora, segundos después del export.
+  - El rename de ether2→ether3 falló (el nombre ya existía) y las direcciones quedaron intactas; abonado1 nunca se cayó.
+  - Reversión: `remove` del `wan-pppoe` y del `dhcp-client`, `/system identity set name=R1`. Lección: `/export` es inofensivo, pero su salida es ejecutable; no pegarla en otra terminal.
+- En el export de R1 se ve que el servidor PPPoE quedó con **`authentication=chap`** (decisión aplicada) y que ya no hay usuarios en `/ppp secret`: toda la autenticación pasa por RADIUS.
+- Dato: en R1 los nombres de ether2/ether3 están intercambiados respecto de su `default-name` (`set [find default-name=ether3] name=ether2`), por eso el orden de las NICs en UTM no coincidía con el número de ether y hubo que mapear por MAC.
