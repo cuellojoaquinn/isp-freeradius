@@ -1,0 +1,3 @@
+# Usuarios en archivo (módulo files). Vacío a propósito: los abonados viven en
+# PostgreSQL (radcheck / radusergroup / radgroupreply). Si se agrega un usuario
+# acá, el módulo files lo encuentra antes que sql.

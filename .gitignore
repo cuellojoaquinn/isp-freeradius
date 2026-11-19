@@ -1,0 +1,11 @@
+# Secretos
+.env
+*.env
+!.env.example
+
+# Vagrant
+.vagrant/
+*.log
+
+# Exports de MikroTik con datos sensibles
+mikrotik/*-sensitive.rsc

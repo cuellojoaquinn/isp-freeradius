@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    env_file: .env             # contraseñas: ver .env.example
+    environment:
+      POSTGRES_DB: radius
+      POSTGRES_USER: postgres
+    # Usar nuestro pg_hba.conf en lugar del de la imagen (que acepta cualquier IP)
+    command: postgres -c hba_file=/etc/postgresql/pg_hba.conf
+    ports:
+      - "10.10.10.20:5432:5432"   # publicado solo en la IP de gestión
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro    # corre solo con el volumen vacío
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

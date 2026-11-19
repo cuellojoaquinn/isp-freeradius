@@ -1,0 +1,184 @@
+# Bitácora — Proyecto final ASL: RADIUS, accounting y monitoreo
+
+Registro de lo que investigamos, probamos, decidimos y lo que falló. La idea es poder contestar en la defensa *por qué* está cada cosa y *cómo* diagnosticamos los problemas.
+
+---
+
+## 2026-11-18 — Investigación inicial y preparación del lab (Joaquín)
+
+**Mi parte:** integración del MikroTik (R1) como servidor PPPoE con RADIUS.
+
+### Conceptos que repasé
+
+- **RADIUS = AAA.** Autenticación (¿es quien dice ser?), autorización (¿con qué condiciones entra?), accounting (¿qué hizo mientras estuvo conectado?).
+- **El MikroTik es el NAS, o sea, el *cliente* RADIUS.** El abonado nunca le habla al RADIUS: le habla por PPPoE al MikroTik, y el MikroTik consulta al RADIUS (Access-Request → Access-Accept / Access-Reject). Puertos UDP 1812 (auth) y 1813 (accounting).
+- **Shared secret:** NAS y RADIUS comparten un secreto. Con él se firman los paquetes y se ofusca la contraseña en PAP. Si no coincide, FreeRADIUS descarta los paquetes y el NAS solo ve timeouts.
+- **Accounting:** el NAS manda **Start** (se conecta), **Interim-Update** (periódico, con contadores *acumulados*) y **Stop** (totales + motivo de corte). Quien mide el consumo es el NAS: cada sesión PPPoE es una interfaz dinámica (`<pppoe-usuario>`) con contadores.
+- **En la base (`radacct`) una sesión es UNA fila:** el Start hace `INSERT`, los Interim y el Stop hacen `UPDATE` por `acctuniqueid`. Los valores intermedios se pisan → no queda historia minuto a minuto. *(Ojo para el tablero de Grafana.)*
+- **Otras tablas de FreeRADIUS:** `radcheck` / `radreply` (por usuario), `radusergroup` + `radgroupcheck` / `radgroupreply` (por grupo = plan), `nas` (clientes autorizados), `radpostauth` (cada intento de login, aceptado o rechazado).
+- **PAP vs CHAP:**
+  - PAP: la contraseña viaja en claro de abonado a NAS, pero se puede guardar hasheada en la base.
+  - CHAP: desafío-respuesta, la contraseña no viaja; pero RADIUS tiene que recalcular `MD5(id + contraseña + desafío)`, así que necesita la contraseña **en claro** en la base. Protege contra replay, no contra fuerza bruta offline (MD5 es rápido).
+  - **Decisión tentativa: CHAP.** Mitigación: PostgreSQL aislado en la red de Docker, usuario de base con permisos mínimos, contraseñas fuertes.
+- EAP **no aplica**: es para 802.1X, no para PPPoE.
+
+### Estado inicial de R1 (antes de tocar nada)
+
+| Qué | Valor |
+|---|---|
+| ether1 | red UTM **gestion**, sin IP |
+| ether2 | red UTM **lan1**, `192.168.1.1/24` con DHCP |
+| ether3 | red UTM **acceso**, con `vlan-acceso` `100.64.1.1/24` |
+| PPPoE | funcionando con usuarios **locales** (`/ppp secret`): `abonado1`, `abonado2`, perfil `plan-50m` |
+| `plan-50m` | `local-address=100.64.0.1`, `remote-address=pool-pppoe`, `rate-limit=50M/50M` |
+| `/ppp aaa` | `use-radius=no`, `accounting=yes` (solo local), `interim-update=0s` (sin Interim) |
+
+Mapeo red UTM ↔ interfaz hecho comparando MACs (UTM *Edit → Network* vs `/interface print`), porque el orden en UTM no garantiza el número de ether.
+
+### Decisiones
+
+1. **FreeRADIUS en Docker sobre una VM Debian**, no instalado con `apt` (el enunciado pide Docker y además ocuparía 1812/1813 en el host).
+2. **No usar Docker en la Mac:** Docker Desktop corre los contenedores en una VM oculta y puede cambiar la IP de origen de los paquetes. FreeRADIUS identifica al NAS por IP de origen + secret, así que podría rechazar a R1 sin error claro. En una VM Linux, el DNAT de Docker conserva la IP de origen.
+3. **La VM de FreeRADIUS va en la red "gestion"**, separada de abonados (acceso) y de lan1. Argumento: el RADIUS no queda alcanzable desde la red de abonados, como en un ISP real.
+   - Direccionamiento gestion: `10.10.10.0/24` → R1 `10.10.10.1`, VM `10.10.10.10`.
+   - La VM conserva su interfaz Shared Network (`192.168.64.15`) para internet y SSH. **La interfaz de gestión no lleva gateway** (si no, se rompe la ruta por defecto).
+4. **Ir por escalones:** primero FreeRADIUS solo con usuarios en archivo, después sumar PostgreSQL. Así, si algo falla, se sabe en qué tramo.
+
+### Problemas y cómo los diagnosticamos
+
+**1. `apt install` fallaba con "Temporary failure resolving 'deb.debian.org'".**
+- `ping 8.8.8.8` → OK; `ping deb.debian.org` → falla ⇒ hay internet, falla el DNS.
+- `/etc/resolv.conf` apuntaba a `192.168.64.1` (la Mac como DNS de la Shared Network de UTM), que no respondía.
+- Primer arreglo: `nameserver 8.8.8.8` en `/etc/resolv.conf`. Alcanzó para instalar Docker.
+- **Volvió a fallar** después de reiniciar la VM (para agregarle la interfaz de gestión): `docker-compose up` no podía bajar la imagen (`lookup registry-1.docker.io on 192.168.64.1:53 ... connection refused`). El cliente DHCP había pisado `/etc/resolv.conf`.
+- Arreglo persistente: `supersede domain-name-servers 8.8.8.8, 1.1.1.1;` en `/etc/dhcp/dhclient.conf`. Lección: un arreglo a mano sobre un archivo que genera otro servicio no sobrevive a un reinicio.
+
+**1b. `docker-compose up` → `PermissionError: [Errno 13] Permiso denegado`.**
+- El usuario no estaba en el grupo `docker` (o la sesión era anterior al `usermod`). Solución: `usermod -aG docker $USER` y volver a entrar por SSH.
+
+**2. Ping de la VM a R1 en gestion: "Destination Host Unreachable" desde 10.10.10.10.**
+- Que el error venga de la *propia* IP indica que falló ARP: nadie contestó "yo tengo 10.10.10.1".
+- `/ip address print` en R1 → la `10.10.10.1/24` no estaba (el `add` no se había aplicado).
+- Solución: volver a agregarla. Ping OK.
+
+### Escalón 1: FreeRADIUS en Docker (sin base)
+
+- `docker-compose.yml` con la imagen `freeradius/freeradius-server:latest-3.2`, en modo `-X` (debug), puertos `1812/udp` y `1813/udp` publicados.
+- Montamos solo dos archivos sobre la config de la imagen:
+  - `clients.conf`: cliente `r1` (`10.10.10.1` + secret) y cliente `dockernet` (`172.16.0.0/12`, para probar desde la VM: los paquetes que salen del host hacia el contenedor llegan con IP de origen de la red de Docker, no `127.0.0.1`).
+  - `mods-config/files/authorize`: `abonado1 Cleartext-Password := "secreto1"` (solo check, sin reply por ahora).
+- Prueba local con `radtest abonado1 secreto1 127.0.0.1 0 testing123` (paquete `freeradius-utils` en la VM: solo trae herramientas cliente) → **Access-Accept** ✅. Por defecto `radtest` usa PAP (se ve `User-Password` en el pedido).
+- Con contraseña incorrecta → **Access-Reject** ✅.
+- Con CHAP (`radtest -t chap ...`) → **Access-Accept** ✅ (en el pedido viaja `CHAP-Password`, no `User-Password`). Confirma que con `Cleartext-Password` en el servidor CHAP funciona.
+- Quién busca al usuario: el módulo `files` (sección `authorize`) lee `mods-config/files/authorize` y carga la contraseña; después `pap`/`chap` (sección `authenticate`) compara. Con PostgreSQL, el que busca pasa a ser el módulo `sql` contra `radcheck`; el resto del flujo no cambia.
+- Los warnings de `perl: Setting locale failed` durante `apt` son por locale `es_AR.UTF-8` no generado en la VM; no afectan.
+
+### Paso 2a: alta del RADIUS en R1
+
+- `/radius add address=10.10.10.10 secret=... service=ppp authentication-port=1812 accounting-port=1813` (mismo secret que el cliente `r1` en `clients.conf`, y reinicio del contenedor tras cambiarlo).
+- `service=ppp`: el RADIUS se usa solo para PPP/PPPoE (no para el login del router, hotspot, etc.).
+- `require-message-auth=yes-for-request-resp` viene por defecto en RouterOS 7 nuevo: exige el atributo `Message-Authenticator` en pedidos y respuestas (mitigación de la vulnerabilidad **BlastRADIUS**, 2024). FreeRADIUS 3.2 lo manda en el Access-Accept (se vio en `radtest`), así que son compatibles.
+- Ojo: el MikroTik **busca primero en `/ppp secret` local** y solo consulta RADIUS si no encuentra al usuario. Para probar la integración hay que sacar a abonado1 de la lista local.
+
+### Paso 2b: primera autenticación real por RADIUS ✅ (con un problema)
+
+- Activamos `/ppp aaa set use-radius=yes interim-update=5m` y el log `radius,debug`.
+- **Problema:** `/radius monitor` daba `requests: 0` y la sesión de abonado1 no tenía la marca `R`. Causas: (1) la sesión había arrancado antes del cambio (cambiar `/ppp aaa` no re-autentica a los ya conectados) y (2) abonado1 seguía habilitado en `/ppp secret`, que tiene prioridad sobre RADIUS.
+- **Solución:** `/ppp secret disable [find name=abonado1]` + `/ppp active remove [find name=abonado1]` para forzar la reconexión.
+- **Resultado:** sesión con marca `R`, `requests: 3 / accepts: 3 / timeouts: 0`, RTT 10 ms. En el log de R1 se ve el flujo completo:
+  1. `Access-Request` → 10.10.10.10:1812 con `User-Name`, `Calling-Station-Id` (MAC del abonado), `NAS-Port-Id = vlan-acceso`, `Acct-Session-Id = 81500001`, `NAS-IP-Address = 10.10.10.1`, `Message-Authenticator`.
+  2. `Access-Accept`.
+  3. `Accounting-Request` con `Acct-Status-Type = 7` (**Accounting-On**: el NAS avisa que arrancó a mandar accounting, para que el servidor cierre sesiones viejas que hayan quedado abiertas).
+  4. `Accounting-Request` con `Acct-Status-Type = 1` (**Start**) y el mismo `Acct-Session-Id` → así se enlazan auth y accounting de la misma sesión.
+- **Hallazgo 1:** el abonado negoció **MS-CHAPv2**, no CHAP (`MS-CHAP-Challenge` / `MS-CHAP2-Response` en el pedido; `MS-CHAP2-Success` y claves MPPE en la respuesta). El servidor PPPoE ofrece varios métodos y el cliente eligió el más fuerte que tenía. FreeRADIUS lo resolvió con el módulo `mschap` usando el `Cleartext-Password`.
+- **Hallazgo 2 (problema):** la sesión quedó con `ADDRESS 0.0.0.0` y el Start llegó con `Framed-IP-Address = 0.0.0.0`. Antes la IP y la velocidad salían del perfil `plan-50m`, que estaba asignado en el `/ppp secret` local. Con RADIUS, el Access-Accept no dice ni perfil, ni pool, ni velocidad.
+
+## 2026-11-19 — Direccionamiento y caída del RADIUS
+
+### Decisión: quién define el plan
+
+- **Velocidad → RADIUS** (`Mikrotik-Rate-Limit` en el reply; con la base, en `radgroupreply`). Es una regla de negocio: cambiar un plan es tocar una fila y aplica a todos los routers. Además, Grafana puede cruzar consumo (accounting) con plan.
+- **Pool de IPs → router** (perfil por defecto del servidor PPPoE). Es un recurso de red propio de cada router.
+- Descartadas: `Mikrotik-Group` (la lógica del plan queda repartida por los routers) y mandar también el pool por RADIUS (`Framed-Pool` es solo un *nombre* que tiene que existir en cada router: no se gana nada).
+
+### Fix del 0.0.0.0
+
+- Causa confirmada: el servidor PPPoE usaba el perfil `default`, que no tiene `local-address` ni `remote-address`. Con usuarios locales no se notaba porque el `/ppp secret` les asignaba `plan-50m`.
+- Creamos el perfil `pppoe-base-radius` (`local-address=100.64.0.1`, `remote-address=pool-pppoe`, **sin** `rate-limit`) y lo pusimos como `default-profile` del servidor PPPoE `isp` (sobre `vlan-acceso`).
+- Dato: RouterOS reparte las IPs del pool **desde el final del rango** (`pool-pppoe` = `100.64.0.10-100.64.0.100`, por eso el primero recibe la `.100`).
+- Se descartó "borrar todos los perfiles y rehacer el DHCP": el DHCP de R1 sirve a lan1 y no participa en PPPoE (la IP del abonado se asigna por IPCP desde el perfil), y `plan-50m` lo sigue usando abonado2.
+- El servidor PPPoE tiene tildados mschap2, mschap1, chap y pap → por eso el cliente negoció MS-CHAPv2. Pendiente decidir si se restringe a CHAP.
+
+### Prueba no planeada: el RADIUS caído
+
+- Al reconectar a abonado1 no volvía. Causa: al reiniciar la VM, **el contenedor de FreeRADIUS no había arrancado solo** (el compose no tenía política de reinicio).
+- **Qué le pasa al abonado si el RADIUS se cae:**
+  - El orden de PPPoE es descubrimiento → LCP → **autenticación** → IPCP (IP). Sin respuesta del RADIUS, R1 agota el timeout y los reintentos, lo toma como rechazo y corta antes de IPCP: **los que intentan conectarse no entran** y no reciben IP.
+  - abonado1 no cae a la lista local porque está deshabilitado en `/ppp secret`. abonado2 (local) sí podría entrar.
+  - **Los que ya estaban conectados siguen funcionando**: R1 no los re-autentica. Se pierde el accounting (Interim/Stop no llegan).
+- Al levantar el contenedor, abonado1 se conectó y recibió IP del pool ✅.
+
+### Decisión: PostgreSQL y Grafana en VMs separadas
+
+- Alternativa evaluada: PostgreSQL en la misma VM y el mismo compose que FreeRADIUS (llega por la red interna de Docker, sin exponer 5432; más simple de reproducir).
+- **Elegimos separar:** VM `db` (PostgreSQL en Docker) y VM `grafana` (Grafana en Docker, a cargo de otro integrante), ambas en la red de gestión. Motivos: roles separados como en un ISP real, Grafana consume la base desde otra máquina de todos modos, y una caída de una VM no tumba a las otras.
+- Costo asumido: la base **expone 5432** en gestion. Mitigación: publicar el puerto solo en la IP de gestión (no en la Shared Network), `pg_hba.conf` restringido a las IPs de FreeRADIUS y Grafana, y usuarios de base separados (`radius` con escritura sobre las tablas de FreeRADIUS, `grafana` solo lectura).
+- Direccionamiento gestion: R1 `.1`, freeradius `.10`, db `.20`, grafana `.30`.
+
+### VM `db`: PostgreSQL en Docker
+
+- VM Debian con dos interfaces (Shared + gestion), hostname `db`, `10.10.10.20/24` sin gateway, DNS persistente y Docker, siguiendo la misma receta que freeradius pero aplicando las lecciones desde el principio.
+- `~/db/`:
+  - `init/01-schema.sql`: esquema oficial de FreeRADIUS para PostgreSQL, sacado de la propia imagen (`docker cp freeradius:/etc/raddb/mods-config/sql/main/postgresql/schema.sql`), para que coincida con la versión del módulo `sql`.
+  - `init/02-usuarios.sql`: rol `radius` (SELECT sobre config; SELECT/INSERT/UPDATE sobre `radacct`, `radpostauth`, `nasreload`; secuencias; **sin DELETE**) y rol `grafana` (solo SELECT sobre `radacct`, `radpostauth`, `radusergroup`, `radgroupreply`, `nas`; **sin acceso a `radcheck`**, donde están las contraseñas en claro).
+  - `pg_hba.conf`: `local` trust (solo dentro del contenedor); `radius` solo desde `10.10.10.10/32` y `grafana` solo desde `10.10.10.30/32`, ambos con `scram-sha-256`. El superusuario `postgres` no tiene regla `host` → no entra por red.
+  - `docker-compose.yml`: `postgres:16`, `restart: unless-stopped`, `POSTGRES_DB=radius`, `-c hba_file=...` (reemplaza el `pg_hba` permisivo de la imagen), puerto publicado **solo en `10.10.10.20:5432`**, volumen `pgdata` para persistir.
+- Los scripts de `/docker-entrypoint-initdb.d` corren solo con el volumen vacío: para reintentar hay que `docker-compose down -v` (borra datos).
+- Verificado: roles `postgres`, `radius` y `grafana` creados (`\du`). Como los `GRANT` del script están antes de crear `grafana`, que exista `grafana` confirma que las tablas también se crearon.
+
+- Prueba de conexión desde freeradius (`psql -h 10.10.10.20 -U radius -d radius`, cliente `postgresql-client`):
+  - Primer intento: `password authentication failed for user "radius"`. Lectura: red, puerto y `pg_hba` OK (si no, el error sería `no pg_hba.conf entry`); solo fallaba la contraseña (había quedado la de ejemplo del script).
+  - Cambio con `ALTER ROLE radius PASSWORD ...` en la base **y** en `02-usuarios.sql` (para que el script siga siendo la fuente si se recrea la base).
+  - Segundo intento: OK, `radcheck` vacía.
+- DNS de la VM freeradius volvió a fallar: la línea `supersede` nunca se había guardado (solo estaba el ejemplo comentado). El DNS de la Mac falla porque estamos en la red de la facultad (`frm-intranet40`). Se agregó y se verificó con `grep "^supersede"`.
+
+### FreeRADIUS → PostgreSQL (módulo `sql`)
+
+- Datos cargados en la base: `radcheck` (abonado1, `Cleartext-Password`), `radusergroup` (abonado1 → `plan-50m`), `radgroupreply` (`plan-50m` → `Mikrotik-Rate-Limit := 50M/50M`). La velocidad está en el **plan**, no en el usuario.
+- Módulo: copiamos `mods-available/sql` de la imagen y cambiamos `dialect = "postgresql"`, `driver = "rlm_sql_${dialect}"` (por defecto venía `rlm_sql_null`), `server = 10.10.10.20`, `port = 5432` (venía 3306, el de MySQL), `login = radius` (nunca el superusuario), `radius_db = radius`. Se nos había duplicado `radius_db`; se dejó una sola.
+- Lo montamos en `mods-enabled/sql`. El sitio `default` ya llama a `-sql` en authorize/accounting/post-auth: el `-` significa "si el módulo existe". Por eso antes no hacía nada.
+- Vaciamos `mods-config/files/authorize` para que, si abonado1 entra, sea sí o sí por la base.
+- Log al arrancar: driver `rlm_sql_postgresql` cargado y pool de conexiones abierto contra `10.10.10.20` como `radius`, sin errores. En el log se ve la query de Start: `INSERT INTO radacct ... ON CONFLICT (AcctUniqueId) DO UPDATE` (el upsert por id de sesión).
+- **Ojo seguridad:** en modo `-X` el log imprime la contraseña de la base. `-X` es para el lab/diagnóstico; en producción no se corre en debug.
+- Dato: en la imagen `/etc/raddb` y `/etc/freeradius` son la misma config (el log muestra `/etc/freeradius/...`).
+
+### ✅ Integración completa R1 ↔ FreeRADIUS ↔ PostgreSQL
+
+- `radtest -t chap` → Access-Accept con `Mikrotik-Rate-Limit = "50M/50M"` (sale del grupo `plan-50m` en `radgroupreply`). `radpostauth` registra los intentos solo.
+- Reconexión de abonado1 desde R1: sesión con marca `R`, IP `100.64.0.100` del pool (perfil `pppoe-base-radius`) y cola dinámica `<pppoe-abonado1>` con `max-limit=50M/50M` → R1 aplica la velocidad que vino de la base.
+- Cada pieza responde por su parte: R1 = acceso + pool; FreeRADIUS = decisión AAA; PostgreSQL = abonados, planes y accounting.
+
+### Accounting verificado
+
+- `radacct` mostró dos filas de abonado1: la sesión 1 (16:02–16:41, 2360 s, causa **`NAS-Request`**, que es lo que reporta MikroTik al sacar la sesión con `/ppp active remove`; esperábamos `Admin-Reset`) y la sesión 2, abierta por la reconexión automática, con su primer Interim exactamente 300 s después.
+- La sesión 1 empezó **antes** de habilitar el módulo `sql`: el Start se perdió, pero el primer Interim no encontró fila para el `UPDATE` y FreeRADIUS la **creó**, calculando el inicio como hora del Interim menos `Acct-Session-Time`. El accounting se recupera aunque se pierda un Start.
+- Tráfico generado desde el abonado (MikroTik) con `/ping 100.64.0.1 size=1400 interval=0.2` o `/tool bandwidth-test` (este último además muestra el tope de 50 Mbps de la cola).
+- Las horas en la base están en UTC; `db/acct.sh` las muestra en hora local y los bytes en MB.
+
+## Repo y Vagrant
+
+- El equipo trabaja en **Linux + VirtualBox**; Joaquín en Mac Apple Silicon + UTM. El Vagrantfile apunta a **VirtualBox** (`debian/bookworm64`) y crea `db`, `freeradius` y `grafana` en la red interna `gestion`. R1 y los abonados (CHR) se importan a mano: no hay boxes de CHR prácticas para Vagrant.
+- **Secretos fuera del repo:** `freeradius/.env` y `db/.env` (en `.gitignore`), con `.env.example` versionados.
+  - FreeRADIUS lee los secretos con `$ENV{...}` en `clients.conf` y en el módulo `sql`.
+  - Los usuarios de la base se crean con `init/02-usuarios.sh` (y no `.sql`) para poder usar variables de entorno.
+  - El export de R1 en RouterOS 7 oculta los datos sensibles por defecto.
+- El módulo `sql` y el esquema del repo salen de FreeRADIUS **3.2.10** (la misma versión que corre el contenedor), con los cambios documentados arriba.
+
+### Pendientes
+
+- [x] Paso 1: FreeRADIUS en Docker con usuario de prueba en archivo + probar con `radtest`.
+- [ ] Dar de alta el RADIUS en R1 (`/radius`) y activar `use-radius` + `interim-update`.
+- [ ] Decidir quién define el plan: `Mikrotik-Group` (perfil local) vs atributos directos (`Mikrotik-Rate-Limit`, `Framed-Pool`).
+- [ ] Probar qué pasa con los abonados si se cae el RADIUS (conectado vs conectándose).
+- [ ] Sumar PostgreSQL (coordinar esquema con quien hace Grafana).
+- [x] Repo + Vagrant (VirtualBox) + secretos en .env.

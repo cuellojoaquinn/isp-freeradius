@@ -1,0 +1,14 @@
+services:
+  freeradius:
+    image: freeradius/freeradius-server:latest-3.2
+    container_name: freeradius
+    restart: unless-stopped
+    command: -X                # modo debug: muestra cada paquete (solo laboratorio)
+    env_file: .env             # secretos: ver .env.example
+    ports:
+      - "1812:1812/udp"        # autenticación
+      - "1813:1813/udp"        # accounting
+    volumes:
+      - ./clients.conf:/etc/raddb/clients.conf:ro
+      - ./authorize:/etc/raddb/mods-config/files/authorize:ro
+      - ./sql:/etc/raddb/mods-enabled/sql:ro

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Topología del lab · RADIUS ISP</title>
+<style>
+  :root {
+    --fg: #1d1d1f; --muted: #6b6b70; --bg: #fbfbf9; --card: #ffffff;
+    --line: #d9d9d4; --accent: #c2410c; --accent-bg: #fff3ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #ececea; --muted: #a0a09c; --bg: #18181a; --card: #222225;
+      --line: #3a3a3e; --accent: #fb923c; --accent-bg: #2e2018;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 56px; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  figure { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  svg { display: block; width: 100%; height: auto; color: var(--fg); }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  h2 { font-size: 17px; margin: 32px 0 10px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  tr:last-child td { border-bottom: none; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  ol { padding-left: 22px; margin: 0; }
+  ol li { margin-bottom: 6px; }
+  .pend { color: var(--muted); font-style: italic; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .box { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--accent-bg); color: var(--accent); font-weight: 600; margin-left: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Topología del laboratorio — RADIUS, accounting y monitoreo</h1>
+  <p class="sub">Proyecto final ASL · UTN FRM · estado al 19-nov-2026</p>
+
+  <figure>
+    <svg viewBox="0 85 1180 565" role="img" aria-label="Topología: los abonados se conectan por PPPoE a R1 en la red de acceso; R1 consulta a FreeRADIUS por la red de gestión; FreeRADIUS lee y escribe en PostgreSQL; Grafana leerá PostgreSQL. Las VMs de servidores salen a internet por la Shared Network de UTM.">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/>
+        </marker>
+      </defs>
+
+      <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" fill="currentColor">
+
+        <!-- ===== Red de acceso ===== -->
+        <text x="270" y="150" text-anchor="middle" font-size="13" font-weight="700">acceso</text>
+        <text x="270" y="166" text-anchor="middle" font-size="11" opacity="0.7">vlan-acceso · 100.64.1.0/24</text>
+        <line x1="270" y1="178" x2="270" y2="480" stroke="currentColor" stroke-width="4" opacity="0.35"/>
+
+        <!-- abonado1 -->
+        <rect x="30" y="200" width="180" height="96" rx="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="46" y="224" font-size="14" font-weight="700">abonado1</text>
+        <text x="46" y="243" font-size="11" opacity="0.75">MikroTik · pppoe-client</text>
+        <text x="46" y="261" font-size="11" opacity="0.75">IP 100.64.0.100 (pool)</text>
+        <text x="46" y="279" font-size="11" fill="#c2410c" font-weight="600">auth RADIUS · 50M/50M</text>
+        <line x1="210" y1="248" x2="270" y2="248" stroke="#c2410c" stroke-width="2.5"/>
+        <text x="240" y="240" text-anchor="middle" font-size="11" fill="#c2410c" font-weight="700">① PPPoE</text>
+
+        <!-- abonado2 -->
+        <rect x="30" y="360" width="180" height="90" rx="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <text x="46" y="384" font-size="14" font-weight="700">abonado2</text>
+        <text x="46" y="403" font-size="11" opacity="0.75">usuario local (/ppp secret)</text>
+        <text x="46" y="421" font-size="11" opacity="0.75">perfil plan-50m</text>
+        <text x="46" y="439" font-size="11" opacity="0.6" font-style="italic">pendiente migrar</text>
+        <line x1="210" y1="405" x2="270" y2="405" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/>
+
+        <!-- ===== R1 ===== -->
+        <line x1="270" y1="330" x2="340" y2="330" stroke="currentColor" stroke-width="1.5"/>
+        <text x="305" y="322" text-anchor="middle" font-size="10" opacity="0.7">ether3</text>
+
+        <rect x="340" y="250" width="220" height="160" rx="12" fill="none" stroke="currentColor" stroke-width="2"/>
+        <text x="356" y="276" font-size="15" font-weight="700">R1 · MikroTik CHR</text>
+        <text x="356" y="298" font-size="11" opacity="0.8">PPPoE server «isp» en vlan-acceso</text>
+        <text x="356" y="316" font-size="11" opacity="0.8">perfil por defecto pppoe-base-radius</text>
+        <text x="356" y="334" font-size="11" opacity="0.8">local 100.64.0.1 · pool-pppoe</text>
+        <text x="356" y="352" font-size="11" opacity="0.8">100.64.0.10 – 100.64.0.100</text>
+        <text x="356" y="374" font-size="11" fill="#c2410c" font-weight="600">NAS → RADIUS 10.10.10.10</text>
+        <text x="356" y="392" font-size="11" opacity="0.8">interim-update 5m</text>
+
+        <!-- lan1 -->
+        <line x1="450" y1="410" x2="450" y2="510" stroke="currentColor" stroke-width="1.5"/>
+        <text x="458" y="465" font-size="10" opacity="0.7">ether2 · .1</text>
+        <rect x="360" y="510" width="180" height="62" rx="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="376" y="534" font-size="13" font-weight="700">lan1</text>
+        <text x="376" y="553" font-size="11" opacity="0.75">192.168.1.0/24 · DHCP</text>
+
+        <!-- ===== Red de gestión ===== -->
+        <text x="640" y="104" text-anchor="middle" font-size="13" font-weight="700">gestion</text>
+        <text x="640" y="120" text-anchor="middle" font-size="11" opacity="0.7">10.10.10.0/24</text>
+        <line x1="640" y1="132" x2="640" y2="570" stroke="currentColor" stroke-width="4" opacity="0.35"/>
+
+        <line x1="560" y1="330" x2="640" y2="330" stroke="currentColor" stroke-width="1.5"/>
+        <text x="600" y="346" text-anchor="middle" font-size="10" opacity="0.7">ether1 · .1</text>
+
+        <!-- flujo RADIUS R1 -> freeradius -->
+        <polyline points="560,282 612,282 612,178 718,178" fill="none" stroke="#c2410c" stroke-width="2.5" marker-end="url(#arr)"/>
+        <text x="604" y="214" text-anchor="end" font-size="11" fill="#c2410c" font-weight="700">② RADIUS</text>
+        <text x="604" y="229" text-anchor="end" font-size="10" fill="#c2410c">UDP 1812 / 1813</text>
+
+        <!-- ===== Servidores ===== -->
+        <!-- freeradius -->
+        <line x1="640" y1="215" x2="720" y2="215" stroke="currentColor" stroke-width="1.5"/>
+        <text x="680" y="230" text-anchor="middle" font-size="10" opacity="0.7">enp0s2 .10</text>
+        <rect x="720" y="140" width="260" height="112" rx="12" fill="none" stroke="currentColor" stroke-width="2"/>
+        <text x="736" y="165" font-size="14" font-weight="700">VM freeradius</text>
+        <text x="736" y="186" font-size="11" opacity="0.8">Docker · FreeRADIUS 3.2 (-X)</text>
+        <text x="736" y="204" font-size="11" opacity="0.8">UDP 1812 auth · 1813 accounting</text>
+        <text x="736" y="222" font-size="11" opacity="0.8">clients.conf: r1 = 10.10.10.1</text>
+        <text x="736" y="240" font-size="11" opacity="0.8">módulo sql → 10.10.10.20</text>
+
+        <!-- flujo SQL freeradius -> db -->
+        <line x1="850" y1="252" x2="850" y2="298" stroke="#c2410c" stroke-width="2.5" marker-end="url(#arr)"/>
+        <text x="860" y="272" font-size="11" fill="#c2410c" font-weight="700">③ SQL :5432</text>
+        <text x="860" y="287" font-size="10" fill="#c2410c">usuario radius</text>
+
+        <!-- db -->
+        <line x1="640" y1="355" x2="720" y2="355" stroke="currentColor" stroke-width="1.5"/>
+        <text x="680" y="370" text-anchor="middle" font-size="10" opacity="0.7">enp0s2 .20</text>
+        <rect x="720" y="300" width="260" height="112" rx="12" fill="none" stroke="currentColor" stroke-width="2"/>
+        <text x="736" y="325" font-size="14" font-weight="700">VM db</text>
+        <text x="736" y="346" font-size="11" opacity="0.8">Docker · PostgreSQL 16</text>
+        <text x="736" y="364" font-size="11" opacity="0.8">5432 publicado solo en 10.10.10.20</text>
+        <text x="736" y="382" font-size="11" opacity="0.8">pg_hba: radius ← .10 · grafana ← .30</text>
+        <text x="736" y="400" font-size="11" opacity="0.8">radcheck · radgroupreply · radacct …</text>
+
+        <!-- flujo grafana -> db (pendiente) -->
+        <line x1="850" y1="470" x2="850" y2="416" stroke="#c2410c" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+        <text x="860" y="440" font-size="11" fill="#c2410c" font-weight="700">④ SELECT</text>
+        <text x="860" y="455" font-size="10" fill="#c2410c">usuario grafana</text>
+
+        <!-- grafana -->
+        <line x1="640" y1="520" x2="720" y2="520" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <text x="680" y="535" text-anchor="middle" font-size="10" opacity="0.7">.30</text>
+        <rect x="720" y="472" width="260" height="96" rx="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <text x="736" y="497" font-size="14" font-weight="700">VM grafana</text>
+        <text x="736" y="518" font-size="11" opacity="0.8">Docker · Grafana (otro integrante)</text>
+        <text x="736" y="536" font-size="11" opacity="0.8">10.10.10.30</text>
+        <text x="736" y="554" font-size="11" opacity="0.6" font-style="italic">pendiente · métricas de R1 a definir</text>
+
+        <!-- ===== Shared Network UTM ===== -->
+        <text x="1075" y="104" text-anchor="middle" font-size="13" font-weight="700">Shared Network</text>
+        <text x="1075" y="120" text-anchor="middle" font-size="11" opacity="0.7">192.168.64.0/24</text>
+        <line x1="1075" y1="132" x2="1075" y2="570" stroke="currentColor" stroke-width="4" opacity="0.35"/>
+
+        <line x1="980" y1="175" x2="1075" y2="175" stroke="currentColor" stroke-width="1.5"/>
+        <text x="1027" y="168" text-anchor="middle" font-size="10" opacity="0.7">enp0s1 .15</text>
+        <line x1="980" y1="335" x2="1075" y2="335" stroke="currentColor" stroke-width="1.5"/>
+        <text x="1027" y="328" text-anchor="middle" font-size="10" opacity="0.7">enp0s1</text>
+        <line x1="980" y1="505" x2="1075" y2="505" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/>
+
+        <rect x="985" y="582" width="180" height="56" rx="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <line x1="1075" y1="570" x2="1075" y2="582" stroke="currentColor" stroke-width="1.5"/>
+        <text x="1001" y="604" font-size="13" font-weight="700">Mac (UTM)</text>
+        <text x="1001" y="622" font-size="11" opacity="0.75">.1 · gateway · internet · SSH</text>
+      </g>
+    </svg>
+    <figcaption>Las flechas naranjas son flujos lógicos de una conexión (punteado = pendiente). Físicamente, ② ③ y ④ viajan por la red de gestión. Las VMs de servidores usan la Shared Network solo para internet y SSH: la interfaz de gestión no tiene gateway.</figcaption>
+  </figure>
+
+  <h2>Qué pasa cuando abonado1 se conecta</h2>
+  <div class="box">
+    <ol>
+      <li><strong>① PPPoE</strong> — descubrimiento y LCP con R1; el abonado presenta usuario y contraseña (hoy se negocia MS-CHAPv2; el servidor ofrece pap, chap, mschap1 y mschap2).</li>
+      <li><strong>② RADIUS</strong> — R1 manda un <code>Access-Request</code> a <code>10.10.10.10:1812</code> firmado con el shared secret. Si recibe <code>Access-Accept</code>, asigna IP del pool (IPCP) y crea la cola con el <code>Mikrotik-Rate-Limit</code> recibido. Después manda accounting a <code>:1813</code>: Start, Interim cada 5 min y Stop.</li>
+      <li><strong>③ SQL</strong> — FreeRADIUS busca la contraseña en <code>radcheck</code>, el plan en <code>radusergroup</code> y la velocidad en <code>radgroupreply</code>; registra el intento en <code>radpostauth</code> y el accounting en <code>radacct</code> (una fila por sesión: INSERT en Start, UPDATE en Interim/Stop).</li>
+      <li><strong>④ Grafana</strong> <span class="tag">pendiente</span> — lee <code>radacct</code> y compañía con un usuario de solo lectura, sin acceso a <code>radcheck</code>.</li>
+    </ol>
+  </div>
+
+  <h2>Direccionamiento</h2>
+  <table>
+    <thead><tr><th>Equipo</th><th>Interfaz</th><th>Red UTM</th><th>Dirección</th><th>Rol</th></tr></thead>
+    <tbody>
+      <tr><td>R1</td><td><code>ether1</code></td><td>gestion</td><td><code>10.10.10.1/24</code></td><td>NAS hacia los servidores</td></tr>
+      <tr><td>R1</td><td><code>ether2</code></td><td>lan1</td><td><code>192.168.1.1/24</code></td><td>LAN con DHCP (<code>pool-dhcp</code>)</td></tr>
+      <tr><td>R1</td><td><code>ether3</code> → <code>vlan-acceso</code></td><td>acceso</td><td><code>100.64.1.1/24</code></td><td>PPPoE server «isp»</td></tr>
+      <tr><td>R1 (sesiones)</td><td><code>&lt;pppoe-…&gt;</code></td><td>—</td><td>local <code>100.64.0.1</code> · pool <code>100.64.0.10–100</code></td><td>una interfaz dinámica por abonado</td></tr>
+      <tr><td>VM freeradius</td><td><code>enp0s2</code> / <code>enp0s1</code></td><td>gestion / Shared</td><td><code>10.10.10.10/24</code> / <code>192.168.64.15</code></td><td>FreeRADIUS en Docker</td></tr>
+      <tr><td>VM db</td><td><code>enp0s2</code> / <code>enp0s1</code></td><td>gestion / Shared</td><td><code>10.10.10.20/24</code> / DHCP</td><td>PostgreSQL en Docker</td></tr>
+      <tr><td>VM grafana</td><td>—</td><td>gestion / Shared</td><td><code>10.10.10.30/24</code></td><td class="pend">pendiente</td></tr>
+    </tbody>
+  </table>
+
+  <div class="grid">
+    <div>
+      <h2>Puertos y quién habla con quién</h2>
+      <table>
+        <thead><tr><th>Origen</th><th>Destino</th><th>Puerto</th></tr></thead>
+        <tbody>
+          <tr><td>abonados</td><td>R1</td><td>PPPoE (capa 2)</td></tr>
+          <tr><td>R1 <code>.1</code></td><td>freeradius <code>.10</code></td><td>UDP 1812, 1813</td></tr>
+          <tr><td>freeradius <code>.10</code></td><td>db <code>.20</code></td><td>TCP 5432</td></tr>
+          <tr><td>grafana <code>.30</code></td><td>db <code>.20</code></td><td>TCP 5432 <span class="tag">pend.</span></td></tr>
+          <tr><td>grafana <code>.30</code></td><td>R1 <code>.1</code></td><td class="pend">a definir (SNMP / syslog / API)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h2>Usuarios de la base</h2>
+      <table>
+        <thead><tr><th>Usuario</th><th>Desde</th><th>Puede</th></tr></thead>
+        <tbody>
+          <tr><td><code>postgres</code></td><td>solo dentro del contenedor</td><td>todo</td></tr>
+          <tr><td><code>radius</code></td><td><code>10.10.10.10</code></td><td>leer config de abonados; INSERT/UPDATE en <code>radacct</code>, <code>radpostauth</code>; sin DELETE</td></tr>
+          <tr><td><code>grafana</code></td><td><code>10.10.10.30</code></td><td>solo SELECT; sin <code>radcheck</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</body>
+</html>
