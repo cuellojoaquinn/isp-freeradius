@@ -10,8 +10,8 @@ VALUES ('abonado1', 'Cleartext-Password', ':=', 'secreto1');
 INSERT INTO radusergroup (username, groupname, priority)
 VALUES ('abonado1', 'plan-50m', 1);
 
--- abonado2: pendiente de migrar (hoy sigue como usuario local en R1)
--- INSERT INTO radcheck (username, attribute, op, value)
--- VALUES ('abonado2', 'Cleartext-Password', ':=', 'secreto2');
--- INSERT INTO radusergroup (username, groupname, priority)
--- VALUES ('abonado2', 'plan-50m', 1);
+-- abonado2
+INSERT INTO radcheck (username, attribute, op, value)
+VALUES ('abonado2', 'Cleartext-Password', ':=', 'secreto2');
+INSERT INTO radusergroup (username, groupname, priority)
+VALUES ('abonado2', 'plan-50m', 1);
